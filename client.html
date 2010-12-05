@@ -1,11 +1,5 @@
-<?php
-require_once(dirname(__file__) . "/bootstrap.php");
-
-// http://stackoverflow.com/questions/3220547/websocket-handshake-problem/3237394#3237394
-
-?>
-
 <html>
+<body>
 <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.4.3/jquery.min.js"></script>
 <script>
 if (window["WebSocket"]) {
@@ -13,7 +7,7 @@ if (window["WebSocket"]) {
     conn.onopen = function(evt) {
 		console.log('readystate:' + conn.readyState);
         console.log("connection open");
-		conn.send('skickar meddelande');
+		conn.send('Klient ansluter');
     }
 	conn.onclose = function(evt) {
 		console.log('readystate:' + conn.readyState);
@@ -23,6 +17,7 @@ if (window["WebSocket"]) {
 		console.log('readystate:' + conn.readyState);
 		console.log('message');
         console.log(evt.data);
+		$('<div/>').text(evt.data).prependTo('#recived');
     }
 	conn.onerror = function(error) {
 	console.log('readystate:' + conn.readyState);
@@ -33,7 +28,18 @@ if (window["WebSocket"]) {
     if(!conn) {
         console.log("Failed to connect to server");
 	}
+	$(function () {
+		$('#submit').click(function () {
+			console.log('till server ' + $('#message').val());
+			conn.send($('#message').val());
+			return false;
+		});
+	});
 }
 </script>
+<input type="text" id="message"/>
+<input type="button" id="submit"/>
+<div id="recived"></div>
+</body>
 </html>
    
