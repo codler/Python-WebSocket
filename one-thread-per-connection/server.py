@@ -1,15 +1,14 @@
 #!/usr/bin/env python
 #! -*- coding: utf-8 -*-
+import SocketServer
 import sys
 import hashlib
 import re
 from struct import pack
+import threading
 import os
 import time
 from daemon import Daemon
-import asyncore
-import socket
-
 
 def string_to_header(data):
     data = data.split('\r\n\r\n', 1)
@@ -43,34 +42,33 @@ def generate_handshake_key(headers, data):
     magic = hashlib.md5(catstring).digest()
     return magic
 
-class MyDaemon(Daemon):
-    def run(self):
-        server = EchoServer(HOST, PORT)
-        asyncore.loop()
 
-class EchoHandler(asyncore.dispatcher_with_send):
-    handshaken = False
+class MyTCPHandler(SocketServer.BaseRequestHandler):
+    """
+    The RequestHandler class for our server.
 
-    def _init__(self):
-        asyncore.dispatcher_with_send.__init__(self)
-        #self.client = client
-        #self.server = server
-        self.handshaken = False
+    It is instantiated once per connection to the server, and must
+    override the handle() method to implement communication to the
+    client.
+    """
+    def setup(self):
+        if not hasattr(self.server, 'connections'):
+            setattr(self.server, 'connections', [])
+        self.server.connections.append(self.request)
 
-    def set_server(self, server):
-        self.server = server
+    def finish(self):
+        print "finish"
 
-    def set_client(self, client):
-        self.client = client
-
-    def handshake(self, host, port, data):
-        print 'handskaka'
-        data = data.strip()
-        print data
-        headers = string_to_header(data)
+    def handle(self):
+        HOST, PORT = "heroesofconquest.se", 8080
+        # self.request is the TCP socket connected to the client
+        self.data = self.request.recv(1024).strip()
+        print "%s wrote:" % self.client_address[0]
+        print self.data
+        headers = string_to_header(self.data)
         if ('origin' not in headers):
             return False
-        key = generate_handshake_key(headers, data.split('\r\n')[-1])
+        key = generate_handshake_key(headers, self.data.split('\r\n')[-1])
         #print "KEY = %s" % (key)
        
         # header['host'] instead of HOST? http://code.google.com/p/phpwebsocket/source/browse/trunk/%20phpwebsocket/server.php
@@ -84,64 +82,46 @@ class EchoHandler(asyncore.dispatcher_with_send):
             "Sec-Websocket-Location: ws://%(host)s:%(port)s/\r\n"
             "\r\n"
             "%(key)s"
-        ) % {'origin': headers['origin'], 'host': host, 'port': port, 'key': key}
+        ) % {'origin': headers['origin'], 'host': HOST, 'port': PORT, 'key': key}
         
         print handshake
-        return handshake
-    
-    def handle_read(self):
-        data = self.recv(1024)
-        if not data:
-            print "stang"
-            self.close()
-            self.server.connections.remove(self.client)
-            for i in self.server.connections:
-                if i != self.client:
-                    i.send("\x00%s\xff" % 'klient disconnect')
-            
-        if not self.handshaken:
-            handshake = self.handshake(self.server.host, self.server.port, data)
-            if handshake:
-                self.send(handshake)
-                self.handshaken = True
-        else:
-            msgs = data.split('\xff')
-            data = msgs.pop()
-            print "ta emot"
+        self.request.send(handshake)
+        while 1:
+            self.data = self.request.recv(1024)
+            if not self.data:
+                print 'connection close'
+                self.request.close()
+                self.server.connections.remove(self.request)
+                break
+            msgs = self.data.split('\xff')
+            self.data = msgs.pop()
             for msg in msgs:
                 if msg[0] == '\x00':
                     print msg[1:]
-                    self.send("\x00%s\xff" % msg[1:])
+                    self.request.send("\x00%s\xff" % msg[1:])
                     for i in self.server.connections:
-                        if i != self.client:
+                        if i != self.request:
                             i.send("\x00%s\xff" % msg[1:])
                     break
 
-class EchoServer(asyncore.dispatcher):
+class ThreadedTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
+    pass
 
-    def __init__(self, host, port):
-        asyncore.dispatcher.__init__(self)
-        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.set_reuse_addr()
-        self.bind((host, port))
-        self.listen(5)
-        self.connections = []
-        self.host = host
-        self.port = port
-
-    def handle_accept(self):
-        sock, addr = self.accept()
-        print 'Incoming connection from %s' % repr(addr)
-        self.connections.append(sock)
-        handler = EchoHandler(sock)
-        handler.set_server(self)
-        handler.set_client(sock)
+class MyDaemon(Daemon):
+    def run(self):
+        server = ThreadedTCPServer((HOST, PORT), MyTCPHandler)
+        server.serve_forever()
 
 if __name__ == "__main__":
     HOST, PORT = "heroesofconquest.se", 8080
 
-    # server = EchoServer(HOST, PORT)
-    # asyncore.loop()
+    # Create the server, binding to localhost on port 9999
+    #server = SocketServer.TCPServer((HOST, PORT), MyTCPHandler)
+
+    # Activate the server; this will keep running until you
+    # interrupt the program with Ctrl-C
+    #server.serve_forever()
+
 
     daemon = MyDaemon('/tmp/daemon-example.pid')
     if len(sys.argv) == 2:
