@@ -9,6 +9,7 @@ import time
 from daemon import Daemon
 import asyncore
 import socket
+import logging
 
 
 def string_to_header(data):
@@ -45,6 +46,7 @@ def generate_handshake_key(headers, data):
 
 class MyDaemon(Daemon):
     def run(self):
+        logging.debug('Starting server on %s:%s' % (HOST, PORT))
         server = EchoServer(HOST, PORT)
         asyncore.loop()
 
@@ -64,9 +66,8 @@ class EchoHandler(asyncore.dispatcher_with_send):
         self.client = client
 
     def handshake(self, host, port, data):
-        print 'handskaka'
         data = data.strip()
-        print data
+        logging.debug('Handshake - request: %s' % data)
         headers = string_to_header(data)
         if ('origin' not in headers):
             return False
@@ -85,19 +86,14 @@ class EchoHandler(asyncore.dispatcher_with_send):
             "\r\n"
             "%(key)s"
         ) % {'origin': headers['origin'], 'host': host, 'port': port, 'key': key}
-        
-        print handshake
+        logging.debug('Handshake - response: %s' % handshake)
         return handshake
     
     def handle_read(self):
         data = self.recv(1024)
+        logging.debug('handle_read')
         if not data:
-            print "stang"
-            self.close()
-            self.server.connections.remove(self.client)
-            for i in self.server.connections:
-                if i != self.client:
-                    i.send("\x00%s\xff" % 'klient disconnect')
+            self.handle_close()
             
         if not self.handshaken:
             handshake = self.handshake(self.server.host, self.server.port, data)
@@ -107,15 +103,27 @@ class EchoHandler(asyncore.dispatcher_with_send):
         else:
             msgs = data.split('\xff')
             data = msgs.pop()
-            print "ta emot"
             for msg in msgs:
                 if msg[0] == '\x00':
-                    print msg[1:]
+                    #print msg[1:]
+                    logging.debug('Recived message:%s' % msg[1:])
                     self.send("\x00%s\xff" % msg[1:])
                     for i in self.server.connections:
                         if i != self.client:
                             i.send("\x00%s\xff" % msg[1:])
                     break
+    def log_info(self, message, type='info'):
+        logging.debug('log_info::%s::%s' % (type,message))
+
+    def handle_close(self):
+        logging.debug('handle_close')
+        self.close()
+        if self.client in self.server.connections:
+            self.server.connections.remove(self.client)
+            logging.debug('Connection close - No of connection:%s' % len(self.server.connections))
+            for i in self.server.connections:
+                if i != self.client:
+                    i.send("\x00%s\xff" % 'client disconnect')
 
 class EchoServer(asyncore.dispatcher):
 
@@ -131,13 +139,15 @@ class EchoServer(asyncore.dispatcher):
 
     def handle_accept(self):
         sock, addr = self.accept()
-        print 'Incoming connection from %s' % repr(addr)
+        logging.debug('Incoming connection from %s' % repr(addr))
+        #print 'Incoming connection from %s' % repr(addr)
         self.connections.append(sock)
         handler = EchoHandler(sock)
         handler.set_server(self)
         handler.set_client(sock)
 
 if __name__ == "__main__":
+    logging.basicConfig(filename='websocket.log', level=logging.DEBUG)
     HOST, PORT = "heroesofconquest.se", 8080
 
     # server = EchoServer(HOST, PORT)
