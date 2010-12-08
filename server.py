@@ -104,7 +104,7 @@ class EchoHandler(asyncore.dispatcher_with_send):
             msgs = data.split('\xff')
             data = msgs.pop()
             for msg in msgs:
-                if msg[0] == '\x00':
+                if msg and msg[0] == '\x00':
                     #print msg[1:]
                     logging.debug('Recived message:%s' % msg[1:])
                     self.send("\x00%s\xff" % msg[1:])
@@ -147,7 +147,7 @@ class EchoServer(asyncore.dispatcher):
         handler.set_client(sock)
 
 if __name__ == "__main__":
-    logging.basicConfig(filename='websocket.log', level=logging.DEBUG)
+    logging.basicConfig(filename='websocket.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
     HOST, PORT = "heroesofconquest.se", 8080
 
     # server = EchoServer(HOST, PORT)
