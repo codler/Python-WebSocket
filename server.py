@@ -10,7 +10,8 @@ from daemon import Daemon
 import asyncore
 import socket
 import logging
-
+import threading
+import SocketServer
 
 def string_to_header(data):
     data = data.split('\r\n\r\n', 1)
@@ -44,26 +45,14 @@ def generate_handshake_key(headers, data):
     magic = hashlib.md5(catstring).digest()
     return magic
 
-class MyDaemon(Daemon):
-    def run(self):
-        logging.debug('Starting server on %s:%s' % (HOST, PORT))
-        server = EchoServer(HOST, PORT)
-        asyncore.loop()
-
-class EchoHandler(asyncore.dispatcher_with_send):
-    handshaken = False
-
-    def _init__(self):
-        asyncore.dispatcher_with_send.__init__(self)
-        #self.client = client
-        #self.server = server
-        self.handshaken = False
-
-    def set_server(self, server):
+class BaseWebSocketHandler:
+    def __init__(self, server, client, connections):
         self.server = server
-
-    def set_client(self, client):
         self.client = client
+        self.connections = connections
+
+    def set_connections(self, connections):
+        self.connections = connections
 
     def handshake(self, host, port, data):
         data = data.strip()
@@ -72,7 +61,6 @@ class EchoHandler(asyncore.dispatcher_with_send):
         if ('origin' not in headers):
             return False
         key = generate_handshake_key(headers, data.split('\r\n')[-1])
-        #print "KEY = %s" % (key)
        
         # header['host'] instead of HOST? http://code.google.com/p/phpwebsocket/source/browse/trunk/%20phpwebsocket/server.php
         handshake = (
@@ -88,7 +76,73 @@ class EchoHandler(asyncore.dispatcher_with_send):
         ) % {'origin': headers['origin'], 'host': host, 'port': port, 'key': key}
         logging.debug('Handshake - response: %s' % handshake)
         return handshake
-    
+	
+    def onconnect(self):
+        pass
+
+    def onrecieve(self, message):
+        for connection in self.connections:
+            #if self.client != connection:
+            self.onsend(connection, message)
+
+    def onsend(self, connection, message):
+        connection.send("\x00%s\xff" % message)
+
+    def ondisconnect(self):
+        pass
+
+class WebSocketHandler(BaseWebSocketHandler):
+    pass
+
+class ThreadedWebSocketHandler(SocketServer.BaseRequestHandler, BaseWebSocketHandler):
+    def setup(self):
+        logging.debug('Incoming connection from %s' % repr(self.client_address))
+        self.handler = self.server.handler(self.server, self.request, self.server.connections)
+
+    def handle(self):
+        data = self.request.recv(1024).strip()
+
+        handshake = self.handshake(self.server.host, self.server.port, data)        
+        if not handshake:
+            return False
+        self.request.send(handshake)
+        self.server.connections.append(self.request)
+        self.handler.set_connections(self.server.connections)
+        self.handler.onconnect()
+
+        while 1:
+            data = self.request.recv(1024)
+            if not data:
+                self.request.close()
+                self.server.connections.remove(self.request)
+                self.handler.set_connections(self.server.connections)
+                self.handler.ondisconnect()
+                logging.debug('Connection close - No of connection:%s' % len(self.server.connections))
+                break
+            msgs = data.split('\xff')
+            data = msgs.pop()
+            for msg in msgs:
+                if msg and msg[0] == '\x00':
+                    logging.debug('Recived message:%s' % msg[1:])
+                    self.handler.onrecieve(msg[1:])
+                    break
+
+class AsyncWebSocketHandler(asyncore.dispatcher_with_send, BaseWebSocketHandler):
+    handshaken = False
+
+    def _init__(self):
+        asyncore.dispatcher_with_send.__init__(self)
+        self.handshaken = False
+
+    def set_server(self, server):
+        self.server = server
+
+    def set_client(self, client):
+        self.client = client
+
+    def set_handler(self, handler):
+        self.handler = handler(self.server, self.client, self.server.connections)
+
     def handle_read(self):
         data = self.recv(1024)
         logging.debug('handle_read')
@@ -100,18 +154,18 @@ class EchoHandler(asyncore.dispatcher_with_send):
             if handshake:
                 self.send(handshake)
                 self.handshaken = True
+                self.server.connections.append(self.client)
+                self.handler.set_connections(self.server.connections)
+                self.handler.onconnect()
         else:
             msgs = data.split('\xff')
             data = msgs.pop()
             for msg in msgs:
                 if msg and msg[0] == '\x00':
-                    #print msg[1:]
                     logging.debug('Recived message:%s' % msg[1:])
-                    self.send("\x00%s\xff" % msg[1:])
-                    for i in self.server.connections:
-                        if i != self.client:
-                            i.send("\x00%s\xff" % msg[1:])
+                    self.handler.onrecieve(msg[1:])
                     break
+
     def log_info(self, message, type='info'):
         logging.debug('log_info::%s::%s' % (type,message))
 
@@ -120,38 +174,60 @@ class EchoHandler(asyncore.dispatcher_with_send):
         self.close()
         if self.client in self.server.connections:
             self.server.connections.remove(self.client)
+            self.handler.set_connections(self.server.connections)
             logging.debug('Connection close - No of connection:%s' % len(self.server.connections))
-            for i in self.server.connections:
-                if i != self.client:
-                    i.send("\x00%s\xff" % 'client disconnect')
+            self.handler.ondisconnect()
 
-class EchoServer(asyncore.dispatcher):
+class BaseWebSocketServer:
+    def __init__(self, host, port, handler):
+        self.connections = []
+        self.host = host
+        self.port = port
+        self.handler = handler
 
-    def __init__(self, host, port):
+class ThreadedWebSocketServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer, BaseWebSocketServer):
+    def __init__(self, host, port, handler=BaseWebSocketHandler):
+        BaseWebSocketServer.__init__(self, host, port, handler)
+        SocketServer.TCPServer.__init__(self, (host,port), ThreadedWebSocketHandler)
+
+class AsyncWebSocketServer(asyncore.dispatcher, BaseWebSocketServer):
+    def __init__(self, host, port, handler=BaseWebSocketHandler):
+        BaseWebSocketServer.__init__(self, host, port, handler)
         asyncore.dispatcher.__init__(self)
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.set_reuse_addr()
         self.bind((host, port))
         self.listen(5)
-        self.connections = []
-        self.host = host
-        self.port = port
 
     def handle_accept(self):
         sock, addr = self.accept()
         logging.debug('Incoming connection from %s' % repr(addr))
-        #print 'Incoming connection from %s' % repr(addr)
-        self.connections.append(sock)
-        handler = EchoHandler(sock)
+        handler = AsyncWebSocketHandler(sock)
         handler.set_server(self)
         handler.set_client(sock)
+        handler.set_handler(self.handler)
+
+class BaseWebSocket:
+    pass
+
+class ThreadedWebSocket(BaseWebSocket):
+    def __init__(self, host, port, handler=BaseWebSocketHandler):
+        server = ThreadedWebSocketServer(host, port, handler)
+        server.serve_forever()
+
+class AsyncWebSocket(BaseWebSocket):
+    def __init__(self, host, port, handler=BaseWebSocketHandler):
+        server = AsyncWebSocketServer(host, port, handler)
+        asyncore.loop()
+
+class MyDaemon(Daemon):
+    def run(self):
+        logging.debug('Starting server on %s:%s' % (HOST, PORT))
+        AsyncWebSocket(HOST, PORT, WebSocketHandler)
 
 if __name__ == "__main__":
     logging.basicConfig(filename='websocket.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
     HOST, PORT = "heroesofconquest.se", 8080
-
-    # server = EchoServer(HOST, PORT)
-    # asyncore.loop()
 
     daemon = MyDaemon('/tmp/daemon-example.pid')
     if len(sys.argv) == 2:

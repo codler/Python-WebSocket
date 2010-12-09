@@ -1,15 +1,15 @@
 #!/usr/bin/env python
 #! -*- coding: utf-8 -*-
-import SocketServer
 import sys
 import hashlib
 import re
 from struct import pack
-import threading
 import os
 import time
 from daemon import Daemon
-import gc
+import asyncore
+import socket
+import logging
 
 
 def string_to_header(data):
@@ -44,26 +44,30 @@ def generate_handshake_key(headers, data):
     magic = hashlib.md5(catstring).digest()
     return magic
 
+class MyDaemon(Daemon):
+    def run(self):
+        logging.debug('Starting server on %s:%s' % (HOST, PORT))
+        server = EchoServer(HOST, PORT)
+        asyncore.loop()
 
-class MyTCPHandler(SocketServer.BaseRequestHandler):
-    """
-    The RequestHandler class for our server.
+class EchoHandler(asyncore.dispatcher_with_send):
+    handshaken = False
 
-    It is instantiated once per connection to the server, and must
-    override the handle() method to implement communication to the
-    client.
-    """
-    def setup(self):
-        if not hasattr(self.server, 'connections'):
-            setattr(self.server, 'connections', [])
-        self.server.connections.append(self.request)
+    def _init__(self):
+        asyncore.dispatcher_with_send.__init__(self)
+        #self.client = client
+        #self.server = server
+        self.handshaken = False
 
-    def finish(self):
-        print "finish"
+    def set_server(self, server):
+        self.server = server
+
+    def set_client(self, client):
+        self.client = client
 
     def handshake(self, host, port, data):
         data = data.strip()
-        #logging.debug('Handshake - request: %s' % data)
+        logging.debug('Handshake - request: %s' % data)
         headers = string_to_header(data)
         if ('origin' not in headers):
             return False
@@ -82,64 +86,72 @@ class MyTCPHandler(SocketServer.BaseRequestHandler):
             "\r\n"
             "%(key)s"
         ) % {'origin': headers['origin'], 'host': host, 'port': port, 'key': key}
-        #logging.debug('Handshake - response: %s' % handshake)
+        logging.debug('Handshake - response: %s' % handshake)
         return handshake
-
-    def handle(self):
-        #HOST, PORT = "heroesofconquest.se", 8080
-        # self.request is the TCP socket connected to the client
-        data = self.request.recv(1024).strip()
-
-        handshake = self.handshake(self.server.host, self.server.port, data)        
-        print handshake
-        self.request.send(handshake)
-        #self.request.send("\x00%s\xff" % gc.collect())
-        while 1:
-            data = self.request.recv(1024)
-            if not data:
-                print 'connection close'
-                self.request.close()
-                self.server.connections.remove(self.request)
-                for i in self.server.connections:
-                    if i != self.request:
-                        i.send("\x00%s\xff" % 'klient disconnect')
-				#        i.send("\x00%s\xff" % gc.collect())
-                #self.request.send("\x00%s\xff" % gc.collect())
-                break
+    
+    def handle_read(self):
+        data = self.recv(1024)
+        logging.debug('handle_read')
+        if not data:
+            self.handle_close()
+            
+        if not self.handshaken:
+            handshake = self.handshake(self.server.host, self.server.port, data)
+            if handshake:
+                self.send(handshake)
+                self.handshaken = True
+        else:
             msgs = data.split('\xff')
             data = msgs.pop()
-            #self.request.send("\x00%s\xff" % threading.activeCount())
-            self.request.send("\x00%s\xff" % len(self.server.connections))
             for msg in msgs:
                 if msg and msg[0] == '\x00':
-                    print msg[1:]
-                    self.request.send("\x00%s\xff" % msg[1:])
+                    #print msg[1:]
+                    logging.debug('Recived message:%s' % msg[1:])
+                    self.send("\x00%s\xff" % msg[1:])
                     for i in self.server.connections:
-                        if i != self.request:
+                        if i != self.client:
                             i.send("\x00%s\xff" % msg[1:])
                     break
+    def log_info(self, message, type='info'):
+        logging.debug('log_info::%s::%s' % (type,message))
 
-class ThreadedTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
-    def __init__(self, server_address, RequestHandlerClass):
-        SocketServer.TCPServer.__init__(self, server_address, RequestHandlerClass)
-        self.host = server_address[0]
-        self.port = server_address[1]
+    def handle_close(self):
+        logging.debug('handle_close')
+        self.close()
+        if self.client in self.server.connections:
+            self.server.connections.remove(self.client)
+            logging.debug('Connection close - No of connection:%s' % len(self.server.connections))
+            for i in self.server.connections:
+                if i != self.client:
+                    i.send("\x00%s\xff" % 'client disconnect')
 
-class MyDaemon(Daemon):
-    def run(self):
-        server = ThreadedTCPServer((HOST, PORT), MyTCPHandler)
-        server.serve_forever()
+class EchoServer(asyncore.dispatcher):
+
+    def __init__(self, host, port):
+        asyncore.dispatcher.__init__(self)
+        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.set_reuse_addr()
+        self.bind((host, port))
+        self.listen(5)
+        self.connections = []
+        self.host = host
+        self.port = port
+
+    def handle_accept(self):
+        sock, addr = self.accept()
+        logging.debug('Incoming connection from %s' % repr(addr))
+        #print 'Incoming connection from %s' % repr(addr)
+        self.connections.append(sock)
+        handler = EchoHandler(sock)
+        handler.set_server(self)
+        handler.set_client(sock)
 
 if __name__ == "__main__":
+    logging.basicConfig(filename='websocket.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
     HOST, PORT = "heroesofconquest.se", 8080
 
-    # Create the server, binding to localhost on port 9999
-    #server = SocketServer.TCPServer((HOST, PORT), MyTCPHandler)
-
-    # Activate the server; this will keep running until you
-    # interrupt the program with Ctrl-C
-    #server.serve_forever()
-
+    # server = EchoServer(HOST, PORT)
+    # asyncore.loop()
 
     daemon = MyDaemon('/tmp/daemon-example.pid')
     if len(sys.argv) == 2:
