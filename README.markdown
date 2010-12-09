@@ -1,5 +1,10 @@
 # Python WebSocket
 
+* Tested and works on Python 2.5
+
+* PROTOCOL - draft-hixie-thewebsocketprotocol-76 / draft-ietf-hybi-thewebsocketprotocol-00
+
+* CONNECTION METHOD - Asynchronous socket (RECOMMEND) / "One-thread-per-connection"
 
 ## How to use
 
@@ -19,7 +24,7 @@
 			pass
 
 #### Some notes
-* One thread per connection takes about 8MB RAM each!
+* One-thread-per-connection takes about >8MB RAM for each connection! I recommend using asynchronous-socket instead.
 
 ## Feedback
 
