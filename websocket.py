@@ -76,7 +76,7 @@ class BaseWebSocketHandler:
         ) % {'origin': headers['origin'], 'host': host, 'port': port, 'key': key}
         logging.debug('Handshake - response: %s' % handshake)
         return handshake
-	
+
     def onconnect(self):
         pass
 
@@ -86,7 +86,14 @@ class BaseWebSocketHandler:
             self.onsend(connection, message)
 
     def onsend(self, connection, message):
+        if isinstance(message, unicode):
+            message = message.encode('utf-8')
+        elif not isinstance(message, str):
+            message = str(message)
+        #try:
         connection.send("\x00%s\xff" % message)
+        #except Exception, e:
+        #    self.connections.remove(connection)
 
     def ondisconnect(self):
         pass
@@ -130,9 +137,11 @@ class ThreadedWebSocketHandler(SocketServer.BaseRequestHandler, BaseWebSocketHan
 class AsyncWebSocketHandler(asyncore.dispatcher_with_send, BaseWebSocketHandler):
     handshaken = False
 
-    def _init__(self):
-        asyncore.dispatcher_with_send.__init__(self)
-        self.handshaken = False
+    def __init__(self, sock=None, map=None):
+        asyncore.dispatcher_with_send.__init__(self, sock, map)
+    #def __init__(self):
+    #    asyncore.dispatcher_with_send.__init__(self)
+    #    self.handshaken = False
 
     def set_server(self, server):
         self.server = server
@@ -144,16 +153,27 @@ class AsyncWebSocketHandler(asyncore.dispatcher_with_send, BaseWebSocketHandler)
         self.handler = handler(self.server, self.client, self.server.connections)
 
     def handle_read(self):
-        data = self.recv(1024)
+        try:
+            data = self.recv(1024)
+        except socket.timeout:
+            self.handle_close()
+            logging.debug('timeout')
+            return False
         logging.debug('handle_read')
         if not data:
             self.handle_close()
+            return False
             
         if not self.handshaken:
             handshake = self.handshake(self.server.host, self.server.port, data)
             if handshake:
                 self.send(handshake)
                 self.handshaken = True
+                #for connection in self.server.connections:
+                #    if int(time.time()) - connection.time > 60*60:
+                #        self.server.connections.remove(connection)
+                #logging.debug(str(self.client))
+                #self.client.__dict__['time'] = int(time.time())
                 self.server.connections.append(self.client)
                 self.handler.set_connections(self.server.connections)
                 self.handler.onconnect()
@@ -163,7 +183,11 @@ class AsyncWebSocketHandler(asyncore.dispatcher_with_send, BaseWebSocketHandler)
             for msg in msgs:
                 if msg and msg[0] == '\x00':
                     logging.debug('Recived message:%s' % msg[1:])
-                    self.handler.onrecieve(msg[1:])
+                    try:
+                        self.handler.onrecieve(msg[1:])
+                        #self.client.__dict__['time'] = int(time.time())
+                    except Exception, e:
+                        self.handle_close()
                     break
 
     def log_info(self, message, type='info'):
@@ -227,7 +251,7 @@ class MyDaemon(Daemon):
 
 if __name__ == "__main__":
     logging.basicConfig(filename='websocket.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-    HOST, PORT = "heroesofconquest.se", 8080
+    HOST, PORT = "localhost", 8080
 
     daemon = MyDaemon('/tmp/daemon-example.pid')
     if len(sys.argv) == 2:

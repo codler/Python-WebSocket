@@ -4,7 +4,7 @@
 
 * PROTOCOL - draft-hixie-thewebsocketprotocol-76 / draft-ietf-hybi-thewebsocketprotocol-00
 
-* CONNECTION METHOD - Asynchronous socket (RECOMMEND) / "One-thread-per-connection"
+* CONNECTION METHOD - Asynchronous socket (RECOMMEND) / "One-thread-per-connection" (no longer maintained)
 
 ## How to use
 
@@ -25,6 +25,8 @@
 
 #### Some notes
 * One-thread-per-connection takes about >8MB RAM for each connection! I recommend using asynchronous-socket instead.
+
+* Bug, "self.server.connections" does not always remove unused connection from the list.
 
 ## Feedback
 
