@@ -14,10 +14,13 @@
 
 		def onrecieve(self, message):
 			for connection in self.connections:
-				if self.client != connection:
-					self.onsend(connection, message)
+				self.onsend(connection, message)
 
 		def onsend(self, connection, message):
+			if isinstance(message, unicode):
+				message = message.encode('utf-8')
+			elif not isinstance(message, str):
+				message = str(message)
 			connection.send("\x00%s\xff" % message)
 
 		def ondisconnect(self):
